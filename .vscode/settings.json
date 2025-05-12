@@ -22,6 +22,7 @@
         "i2s_std.h": "c",
         "esp_adc_cal.h": "c",
         "cmath": "cpp",
-        "yin.h": "c"
+        "yin.h": "c",
+        "timer.h": "c"
     }
 }
