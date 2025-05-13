@@ -1,0 +1,27 @@
+{
+    "C_Cpp.intelliSenseEngine": "default",
+    "idf.espIdfPathWin": "g:\\esp\\v5.4\\esp-idf",
+    "idf.pythonInstallPath": "g:\\esp\\ESPTool\\.espressif\\tools\\idf-python\\3.11.2\\python.exe",
+    "idf.openOcdConfigs": [
+        "interface/ftdi/esp32_devkitj_v1.cfg",
+        "target/esp32.cfg"
+    ],
+    "idf.portWin": "COM15",
+    "idf.toolsPathWin": "g:\\esp\\ESPTool\\.espressif",
+    "idf.flashType": "UART",
+    "idf.customExtraVars": {
+        "IDF_TARGET": "esp32"
+    },
+    "files.associations": {
+        "gpio.h": "c",
+        "i2s.h": "c",
+        "algorithm": "c",
+        "soc_caps.h": "c",
+        "dac.h": "c",
+        "random": "c",
+        "i2s_std.h": "c",
+        "esp_adc_cal.h": "c",
+        "cmath": "cpp",
+        "yin.h": "c"
+    }
+}
