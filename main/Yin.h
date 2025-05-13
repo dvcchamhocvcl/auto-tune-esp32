@@ -5,9 +5,10 @@
 #include <stdbool.h>
 
 // Sampling rate set to match ESP32 ADC configuration
-#define YIN_SAMPLING_RATE 44100
 
 // For best performance with ESP32, keeping the buffer sizes the same
+#define BUFFER_SIZE 512
+#define HALF_BUFFER_SIZE 512
 
 /**
  * @struct  Yin
@@ -16,12 +17,11 @@
 
 typedef struct
 {
-	uint16_t bufferSize;
-	uint16_t halfBufferSize;
 	uint16_t naturalNotes[7];
 	uint16_t numNaturalNotes;
-	uint8_t *yinBuffer; /**< Buffer that stores the results of the intermediate processing steps of the algorithm */
-	uint16_t threshold; /**< Allowed uncertainty in the result as a decimal (i.e 0.15 is 15%) */
+	uint16_t yinBuffer[HALF_BUFFER_SIZE]; /**< Buffer that stores the results of the intermediate processing steps of the algorithm */
+	uint16_t threshold;					  /**< Allowed uncertainty in the result as a decimal (i.e 0.15 is 15%) */
+	uint16_t samplingRate;
 } Yin;
 
 /**
@@ -29,7 +29,7 @@ typedef struct
  * @param yin        Yin pitch detection object to initialise
  * @param threshold  Allowed uncertainty (e.g 0.05 will return a pitch with ~95% probability)
  */
-void Yin_init(Yin *yin, float threshold, uint16_t bufferSize);
+void Yin_init(Yin *yin, float threshold, uint16_t samplingRate);
 
 /**
  * Runs the Yin pitch detection algorithm

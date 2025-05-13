@@ -18,11 +18,15 @@
  */
 void Yin_difference(Yin *yin, uint8_t *buffer)
 {
-	const uint8_t *bufferIEnd = buffer + yin->halfBufferSize;
+	const uint8_t *bufferIEnd = buffer + HALF_BUFFER_SIZE;
 	/* Calculate the difference for difference shift values (tau) for the half of the samples */
-	for (unsigned char tau = 0; tau < yin->halfBufferSize - 1; tau++)
+	for (unsigned char tau = 0; tau < HALF_BUFFER_SIZE - 1; tau++)
 	{
+
+		/* Take the difference of the signal with a shifted version of itself, then square it.
+		 * (This is the Yin algorithm's tweak on autocorellation) */
 		uint32_t result = 0;
+		// not skipping anything - we want accuracy
 		for (uint8_t *bufferI = buffer; bufferI < bufferIEnd; bufferI += 4)
 		{
 			result += pow((int16_t)(*bufferI) - (int16_t)bufferI[tau], 2);
@@ -45,7 +49,7 @@ void Yin_cumulativeMeanNormalizedDifference(Yin *yin)
 
 	/* Sum all the values in the autocorellation buffer and nomalise the result, replacing
 	 * the value in the autocorellation buffer with a cumulative mean of the normalised difference */
-	for (unsigned char tau = 1; tau < yin->halfBufferSize - 1; tau++)
+	for (unsigned char tau = 1; tau < HALF_BUFFER_SIZE - 1; tau++)
 	{
 		runningSum += yin->yinBuffer[tau];
 		yin->yinBuffer[tau] = (((uint32_t)yin->yinBuffer[tau] * tau) << 10) / runningSum;
@@ -62,11 +66,11 @@ int16_t Yin_absoluteThreshold(Yin *yin)
 
 	/* Search through the array of cumulative mean values, and look for ones that are over the threshold
 	 * The first two positions in yinBuffer are always so start at the third (index 2) */
-	for (tau = 2; tau < yin->halfBufferSize - 1; tau++)
+	for (tau = 2; tau < HALF_BUFFER_SIZE - 1; tau++)
 	{
 		if (yin->yinBuffer[tau] < yin->threshold)
 		{
-			while (tau + 1 < yin->halfBufferSize && yin->yinBuffer[tau + 1] < yin->yinBuffer[tau])
+			while (tau + 1 < HALF_BUFFER_SIZE && yin->yinBuffer[tau + 1] < yin->yinBuffer[tau])
 			{
 				tau++;
 			}
@@ -75,7 +79,7 @@ int16_t Yin_absoluteThreshold(Yin *yin)
 	}
 
 	/* if no pitch found */
-	if (tau >= yin->halfBufferSize - 1 || yin->yinBuffer[tau] >= yin->threshold)
+	if (tau >= HALF_BUFFER_SIZE - 1 || yin->yinBuffer[tau] >= yin->threshold)
 	{
 		return -1;
 	}
@@ -110,7 +114,7 @@ float Yin_parabolicInterpolation(Yin *yin, int16_t tauEstimate)
 	}
 
 	/* Calculate the second polynomial coeffcient based on the current estimate of tau */
-	if (tauEstimate + 1 < yin->halfBufferSize)
+	if (tauEstimate + 1 < HALF_BUFFER_SIZE)
 	{
 		x2 = tauEstimate + 1;
 	}
@@ -148,6 +152,8 @@ float Yin_parabolicInterpolation(Yin *yin, int16_t tauEstimate)
 		s0 = yin->yinBuffer[x0];
 		s1 = yin->yinBuffer[tauEstimate];
 		s2 = yin->yinBuffer[x2];
+		// fixed AUBIO implementation, thanks to Karl Helgason:
+		// (2.0f * s1 - s2 - s0) was incorrectly multiplied with -1
 		betterTau = tauEstimate + (s2 - s0) / (2 * (2 * s1 - s2 - s0));
 	}
 
@@ -163,12 +169,11 @@ float Yin_parabolicInterpolation(Yin *yin, int16_t tauEstimate)
  * @param yin        Yin pitch detection object to initialise
  * @param threshold  Allowed uncertainty (e.g 0.05 will return a pitch with ~95% probability)
  */
-void Yin_init(Yin *yin, float threshold, uint16_t bufferSize)
+void Yin_init(Yin *yin, float threshold, uint16_t samplingRate)
 {
 	/* Initialise the fields of the Yin structure passed in */
-	yin->bufferSize = bufferSize;
-	yin->halfBufferSize = bufferSize / 2;
 	yin->threshold = threshold * 1024;
+	yin->samplingRate = samplingRate;
 	yin->numNaturalNotes = 7;
 	yin->naturalNotes[0] = 0;  // C
 	yin->naturalNotes[1] = 2;  // D
@@ -198,7 +203,7 @@ float Yin_getPitch(Yin *yin, uint8_t *buffer)
 
 	/* Step 5: Interpolate the shift value (tau) to improve the pitch estimate. */
 	if (tauEstimate != -1)
-		return YIN_SAMPLING_RATE / Yin_parabolicInterpolation(yin, tauEstimate);
+		return yin->samplingRate / Yin_parabolicInterpolation(yin, tauEstimate);
 
 	return -1;
 }

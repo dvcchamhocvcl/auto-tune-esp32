@@ -23,6 +23,9 @@
         "esp_adc_cal.h": "c",
         "cmath": "cpp",
         "yin.h": "c",
-        "timer.h": "c"
+        "timer.h": "c",
+        "esp_timer.h": "c",
+        "stdbool.h": "c",
+        "queue.h": "c"
     }
 }
