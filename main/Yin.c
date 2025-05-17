@@ -26,7 +26,6 @@ void Yin_difference(Yin *yin, uint8_t *buffer)
 		/* Take the difference of the signal with a shifted version of itself, then square it.
 		 * (This is the Yin algorithm's tweak on autocorellation) */
 		uint32_t result = 0;
-		// not skipping anything - we want accuracy
 		for (uint8_t *bufferI = buffer; bufferI < bufferIEnd; bufferI += 4)
 		{
 			result += pow((int16_t)(*bufferI) - (int16_t)bufferI[tau], 2);
@@ -176,12 +175,12 @@ void Yin_init(Yin *yin, float threshold, uint16_t samplingRate)
 	yin->samplingRate = samplingRate;
 	yin->numNaturalNotes = 7;
 	yin->naturalNotes[0] = 0;  // C
-	yin->naturalNotes[1] = 2;  // D
-	yin->naturalNotes[2] = 4;  // E
+	yin->naturalNotes[1] = 1;  // D
+	yin->naturalNotes[2] = 3;  // E
 	yin->naturalNotes[3] = 5;  // F
 	yin->naturalNotes[4] = 7;  // G
-	yin->naturalNotes[5] = 9;  // A
-	yin->naturalNotes[6] = 11; // B
+	yin->naturalNotes[5] = 8;  // A
+	yin->naturalNotes[6] = 10; // B
 }
 
 /**
@@ -213,6 +212,13 @@ float Yin_getPitch(Yin *yin, uint8_t *buffer)
  * @param frequency The frequency to find the nearest note for
  * @return The frequency of the nearest musical note
  */
+// float getNearestNoteFrequency(float frequency, Yin *yin)
+// {
+// 	float nearestSemitoneFromC2f = 12.0 * log2(frequency / 65.41);
+// 	uint16_t nearestSemitoneFromC2 = round(nearestSemitoneFromC2f);
+// 	return pow(2, nearestSemitoneFromC2 / 12.0f) * 65.41f;
+// }
+
 float getNearestNoteFrequency(float frequency, Yin *yin)
 {
 	// Calculate the number of semitones from A4 (440 Hz)

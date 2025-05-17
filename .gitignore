@@ -1,4 +1,3 @@
-sdkconfig
-sdkconfig.old
 .vscode/
 .cursorrules
+./main/AutoTune.ino

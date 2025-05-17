@@ -8,7 +8,7 @@
 
 // For best performance with ESP32, keeping the buffer sizes the same
 #define BUFFER_SIZE 512
-#define HALF_BUFFER_SIZE 512
+#define HALF_BUFFER_SIZE 256
 
 /**
  * @struct  Yin

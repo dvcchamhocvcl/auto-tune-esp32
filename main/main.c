@@ -14,20 +14,11 @@
 #include "esp_task_wdt.h"
 #include "Yin.h" /** Yin pitch detection algorithm */
 
-#define MIC_INPUT_PIN 32
-#define I2S_NUM I2S_NUM_0
-#define SAMPLE_RATE 16000
-
-uint16_t samplingRate = SAMPLE_RATE;
-// For pitch detection and correction
-#define PROCESSING_BUFFER_SIZE 512
+#define SAMPLE_RATE 10000
 #define PITCH_DETECTION_THRESHOLD 0.05f // Adjustable based on desired detection sensitivity
-#define MIN_VALID_FREQUENCY 78.0f       // Minimum frequency to consider valid (in Hz)
+#define MIN_VALID_FREQUENCY 62.0f       // Minimum frequency to consider valid (in Hz)
+#define MODE_SWITCH 4                   // GPIO4 for mode switch (can be adjusted)
 
-// GPIO pin for mode switch (autotune/pitch shift)
-#define MODE_SWITCH 4 // GPIO4 for mode switch (can be adjusted)
-
-static const char *TAG = "AutoTune";
 typedef enum
 {
     MODE_AUTOTUNE = 0,    // Automatic pitch correction
@@ -35,21 +26,22 @@ typedef enum
 } OperationMode;
 
 // Global variables
-static Yin yinDetector;                                  // Yin pitch detector
-static uint8_t processingBuffer[PROCESSING_BUFFER_SIZE]; // Buffer for audio analysis
-static uint8_t recordBuffer[PROCESSING_BUFFER_SIZE];     // Circular buffer for audio samples
+static Yin yinDetector;                       // Yin pitch detector
+static uint8_t processingBuffer[BUFFER_SIZE]; // Buffer for audio analysis
+static uint8_t recordBuffer[BUFFER_SIZE];     // Circular buffer for audio samples
 static volatile bool bufferFilled = false;
 static volatile OperationMode currentMode = MODE_AUTOTUNE;
-static int8_t manualPitchShift = 0;              // -128 to 127 for manual pitch shift
 static volatile uint16_t inputPosition = 0;      // Position for writing new samples
 static volatile uint16_t outputPosition = 0;     // Position for reading samples
 static volatile uint16_t processingPosition = 0; // Position for filling the processing buffer
 static volatile uint8_t playbackSpeed = 128;     // Neutral speed (no shift)
 static volatile bool isrReady = false;           // Flag to indicate ISR is properly initialized
-
-// Cache value for ADC channel to avoid runtime calls
+uint16_t samplingRate = SAMPLE_RATE;
 static adc1_channel_t adc_channel = ADC1_CHANNEL_4;
+static volatile float targetFrequency = 0.0f;
+static volatile float frequency = 0.0f;
 
+#define TAG "AutoTune"
 // This function will be called at high frequency for audio sampling
 // MUST be minimal and fast - no printf, ESP_LOG, or blocking calls
 void IRAM_ATTR SampleTimerCallback(void *arg)
@@ -58,17 +50,12 @@ void IRAM_ATTR SampleTimerCallback(void *arg)
     {
         return;
     }
-
-    // Use the regular API but make it faster with these tricks:
-    // 1. Cache the ADC channel in a static variable
-    // 2. Use a lower sample rate (8kHz instead of 20kHz)
-    // 3. Use simplified processing
     int rawValue = adc1_get_raw(adc_channel);
-    uint8_t soundSample = (uint8_t)(rawValue >> 4); // Convert to 8-bit
+    uint8_t soundSample = (uint8_t)(rawValue >> 1); // Convert to 8-bit
 
     // Store in record buffer
     recordBuffer[inputPosition] = soundSample;
-    inputPosition = (inputPosition + 1) & (PROCESSING_BUFFER_SIZE - 1); // Wrap around
+    inputPosition = (inputPosition + 1) & (BUFFER_SIZE - 1); // Wrap around
 
     // Adjust playback position based on speed
     outputPosition += playbackSpeed;
@@ -83,7 +70,7 @@ void IRAM_ATTR SampleTimerCallback(void *arg)
         processingPosition++;
 
         // When buffer is full, signal pitch processing task
-        if (processingPosition >= PROCESSING_BUFFER_SIZE)
+        if (processingPosition >= BUFFER_SIZE)
         {
             processingPosition = 0;
             bufferFilled = true;
@@ -92,57 +79,36 @@ void IRAM_ATTR SampleTimerCallback(void *arg)
 }
 
 // Task for pitch processing
-void PitchProcessTask(void *pvParams)
+void IRAM_ATTR PitchProcessTask(void *arg)
 {
-    esp_task_wdt_add(NULL);
-
-    float targetFrequency = 0.0f;
-    float frequency = 0.0f;
-
-    while (1)
+    if (bufferFilled)
     {
-        // Wait for buffer to be filled with audio samples
-        if (bufferFilled)
+        frequency = Yin_getPitch(&yinDetector, processingBuffer);
+        if (frequency >= MIN_VALID_FREQUENCY)
         {
-            // Detect pitch using Yin algorithm
-            frequency = Yin_getPitch(&yinDetector, processingBuffer);
-
-            // Only use valid detected frequencies
-            if (frequency >= MIN_VALID_FREQUENCY)
+            if (currentMode == MODE_AUTOTUNE)
             {
-                // In autotune mode, correct pitch to nearest note
-                if (currentMode == MODE_AUTOTUNE)
-                {
-                    // Find the nearest musical note frequency
-                    targetFrequency = getNearestNoteFrequency(frequency, &yinDetector);
-
-                    // Adjust playback speed to match the target frequency
-                    // Ratio is target/current, scaled to 8-bit unsigned range around 128 (neutral)
-                    playbackSpeed = (uint8_t)fmin(255, fmax(1, round(targetFrequency * 128.0 / frequency) + manualPitchShift));
-                }
+                targetFrequency = getNearestNoteFrequency(frequency, &yinDetector);
+                playbackSpeed = (uint8_t)fmin(255, fmax(1, round(targetFrequency * 128.0 / frequency)));
             }
-            else
-            {
-                // No valid pitch detected, use manual shift only
-                playbackSpeed = (uint8_t)fmin(255, fmax(1, 128 + manualPitchShift));
-            }
-
-            // In manual shift mode
-            if (currentMode == MODE_MANUAL_SHIFT)
-            {
-                playbackSpeed = (uint8_t)fmin(255, fmax(1, 128 + manualPitchShift));
-            }
-
-            // Reset buffer filled flag for next cycle
-            bufferFilled = false;
-
-            // Debug output (safe to do in a task)
-            // ESP_LOGI(TAG, "Freq: %.2f, Target: %.2f, Speed: %d", frequency, targetFrequency, playbackSpeed);
+        }
+        else
+        {
+            // No valid pitch detected, use manual shift only
+            playbackSpeed = (uint8_t)fmin(255, fmax(1, 128));
         }
 
-        // Give time for other tasks
-        vTaskDelay(pdMS_TO_TICKS(10)); // 50Hz update rate
-        esp_task_wdt_reset();
+        // In manual shift mode
+        if (currentMode == MODE_MANUAL_SHIFT)
+        {
+            playbackSpeed = (uint8_t)fmin(255, fmax(1, 128));
+        }
+
+        // Reset buffer filled flag for next cycle
+        bufferFilled = false;
+
+        // Debug output (safe to do in a task)
+        // ESP_LOGI(TAG, "Freq: %.2f, Target: %.2f, Speed: %d", frequency, targetFrequency, playbackSpeed);
     }
 }
 
@@ -175,52 +141,49 @@ void SwitchReadTask(void *pvParams)
     }
 }
 
-// Function to adjust manual pitch shift value
-void setPitchShift(int8_t shift)
-{
-    manualPitchShift = shift;
-}
-
 void app_main()
 {
     // Initialize Yin pitch detector with appropriate sampling rate
     Yin_init(&yinDetector, PITCH_DETECTION_THRESHOLD, samplingRate);
 
     // Configure ADC - use standard API but cache the channel
-    adc1_config_width(ADC_WIDTH_BIT_12);
+    adc1_config_width(ADC_WIDTH_BIT_9);
     adc1_config_channel_atten(adc_channel, ADC_ATTEN_DB_11);
 
     // Enable DAC
     dac_output_enable(DAC_CHANNEL_1);
 
     // Initialize buffers to mid-level (128)
-    for (int i = 0; i < PROCESSING_BUFFER_SIZE; i++)
+    for (int i = 0; i < BUFFER_SIZE; i++)
     {
         recordBuffer[i] = 128;
         processingBuffer[i] = 128;
     }
 
     // Create tasks
-    xTaskCreatePinnedToCore(&PitchProcessTask, "pitch", 4096, NULL, 3, NULL, 0); // Lower priority on core 0
-    xTaskCreatePinnedToCore(&SwitchReadTask, "switch", 2048, NULL, 2, NULL, 0);  // Lowest priority on core 0
+    // xTaskCreatePinnedToCore(&PitchProcessTask, "pitch", 4096, NULL, 3, NULL, 1); // Lower priority on core 0
+    xTaskCreatePinnedToCore(&SwitchReadTask, "switch", 2048, NULL, 2, NULL, 0); // Lowest priority on core 0
 
     // Create high-precision timer for audio sampling
     esp_timer_handle_t sampleTimer;
+    esp_timer_handle_t pitchTimer;
     const esp_timer_create_args_t sampleTimerconf = {
         .callback = &SampleTimerCallback,
         .name = "audio_sampler",
-        .dispatch_method = ESP_TIMER_ISR // ISR for high performance
-    };
+        .dispatch_method = ESP_TIMER_ISR};
+
+    const esp_timer_create_args_t pitchTimerconf = {
+        .callback = &PitchProcessTask,
+        .name = "pitch_process",
+        .dispatch_method = ESP_TIMER_TASK};
 
     esp_timer_create(&sampleTimerconf, &sampleTimer);
-
-    // Set initial shift
-    setPitchShift(0);
+    esp_timer_create(&pitchTimerconf, &pitchTimer);
 
     // Mark ISR as ready to process
     isrReady = true;
 
     // Start timer with calculated interval
-    uint32_t timer_interval = 1000000 / SAMPLE_RATE;
-    esp_timer_start_periodic(sampleTimer, timer_interval);
+    esp_timer_start_periodic(sampleTimer, 1000000 / SAMPLE_RATE);
+    esp_timer_start_periodic(pitchTimer, BUFFER_SIZE * 1000000 / SAMPLE_RATE);
 }
