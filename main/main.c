@@ -2,35 +2,25 @@
 #include <math.h>              /** Math functions */
 #include "freertos/FreeRTOS.h" /** FreeRTOS libraries (tasks, delays, etc.) */
 #include "freertos/task.h"
-#include "freertos/queue.h"
 #include "driver/gpio.h" /** GPIO control library */
 #include <driver/dac.h>
 #include <driver/adc.h>
-#include "driver/i2s.h"
 #include "esp_timer.h"
-#include "driver/dac.h"
-#include "esp_adc_cal.h"
-#include "esp_log.h"
-#include "esp_task_wdt.h"
+#include "sevenseg.h"
+// #include "driver/dac.h"
+// #include "esp_adc_cal.h"
 #include "Yin.h" /** Yin pitch detection algorithm */
 
-#define SAMPLE_RATE 10000
+#define SAMPLE_RATE 20000
 #define PITCH_DETECTION_THRESHOLD 0.05f // Adjustable based on desired detection sensitivity
 #define MIN_VALID_FREQUENCY 62.0f       // Minimum frequency to consider valid (in Hz)
 #define MODE_SWITCH 4                   // GPIO4 for mode switch (can be adjusted)
-
-typedef enum
-{
-    MODE_AUTOTUNE = 0,    // Automatic pitch correction
-    MODE_MANUAL_SHIFT = 1 // Manual pitch shifting
-} OperationMode;
 
 // Global variables
 static Yin yinDetector;                       // Yin pitch detector
 static uint8_t processingBuffer[BUFFER_SIZE]; // Buffer for audio analysis
 static uint8_t recordBuffer[BUFFER_SIZE];     // Circular buffer for audio samples
 static volatile bool bufferFilled = false;
-static volatile OperationMode currentMode = MODE_AUTOTUNE;
 static volatile uint16_t inputPosition = 0;      // Position for writing new samples
 static volatile uint16_t outputPosition = 0;     // Position for reading samples
 static volatile uint16_t processingPosition = 0; // Position for filling the processing buffer
@@ -40,11 +30,9 @@ uint16_t samplingRate = SAMPLE_RATE;
 static adc1_channel_t adc_channel = ADC1_CHANNEL_4;
 static volatile float targetFrequency = 0.0f;
 static volatile float frequency = 0.0f;
+static uint8_t tone_selection = 0; // Make sure this is accessible where needed
 
-#define TAG "AutoTune"
-// This function will be called at high frequency for audio sampling
-// MUST be minimal and fast - no printf, ESP_LOG, or blocking calls
-void IRAM_ATTR SampleTimerCallback(void *arg)
+void IRAM_ATTR SampleInput(void *arg)
 {
     if (!isrReady)
     {
@@ -79,111 +67,119 @@ void IRAM_ATTR SampleTimerCallback(void *arg)
 }
 
 // Task for pitch processing
-void IRAM_ATTR PitchProcessTask(void *arg)
+void PitchProcessTask(void *arg)
 {
-    if (bufferFilled)
+    while (1)
     {
-        frequency = Yin_getPitch(&yinDetector, processingBuffer);
-        if (frequency >= MIN_VALID_FREQUENCY)
+        if (bufferFilled)
         {
-            if (currentMode == MODE_AUTOTUNE)
+            frequency = Yin_getPitch(&yinDetector, processingBuffer);
+            if (frequency >= MIN_VALID_FREQUENCY)
             {
-                targetFrequency = getNearestNoteFrequency(frequency, &yinDetector);
-                playbackSpeed = (uint8_t)fmin(255, fmax(1, round(targetFrequency * 128.0 / frequency)));
+                targetFrequency = getNearestNoteFrequency(frequency, &yinDetector, tone_selection);
+                // playbackSpeed = (uint8_t)fmin(255, fmax(1, round(targetFrequency * 128.0 / frequency)));
+                playbackSpeed = (uint8_t)round(targetFrequency * 128.0 / frequency);
             }
+            bufferFilled = false;
         }
-        else
-        {
-            // No valid pitch detected, use manual shift only
-            playbackSpeed = (uint8_t)fmin(255, fmax(1, 128));
-        }
-
-        // In manual shift mode
-        if (currentMode == MODE_MANUAL_SHIFT)
-        {
-            playbackSpeed = (uint8_t)fmin(255, fmax(1, 128));
-        }
-
-        // Reset buffer filled flag for next cycle
-        bufferFilled = false;
-
-        // Debug output (safe to do in a task)
-        // ESP_LOGI(TAG, "Freq: %.2f, Target: %.2f, Speed: %d", frequency, targetFrequency, playbackSpeed);
+        vTaskDelay(5);
     }
 }
 
-// Task for reading the mode switch
-void SwitchReadTask(void *pvParams)
+void display_7seg_task(void *arg)
 {
-    // Configure GPIO for mode switch
+    while (1)
+    {
+        for (int i = 0; i <= 6; i++)
+        {
+            display_7seg(i);
+            vTaskDelay(50);
+        }
+    }
+}
+
+void button_task(void *arg)
+{
+    // Configure button GPIOs
     gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << MODE_SWITCH),
+        .pin_bit_mask = (1ULL << 22) | (1ULL << 23),
         .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_up_en = GPIO_PULLUP_ENABLE, // Enable pull-up resistors
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE};
     gpio_config(&io_conf);
 
+    int last_state_22 = 1, last_state_23 = 1;
+
     while (1)
     {
-        // Read switch state
-        if (gpio_get_level(MODE_SWITCH) == 0)
+        int state_22 = gpio_get_level(22);
+        int state_23 = gpio_get_level(23);
+
+        // Button pressed = logic LOW (assuming pull-up and button to GND)
+        if (last_state_23 == 1 && state_23 == 0)
         {
-            currentMode = MODE_AUTOTUNE;
+            if (tone_selection == 11)
+            {
+                tone_selection = 0;
+            }
+            else
+            {
+                tone_selection++;
+            }
+            display_7seg(tone_selection);
+            shift_scale_up(&yinDetector);
         }
-        else
+        if (last_state_22 == 1 && state_22 == 0)
         {
-            currentMode = MODE_MANUAL_SHIFT;
+            if (tone_selection == 0)
+            {
+                tone_selection = 11;
+            }
+            else
+            {
+                tone_selection--;
+            }
+            display_7seg(tone_selection);
+            shift_scale_down(&yinDetector);
         }
 
-        // Check switch every 100ms
-        vTaskDelay(pdMS_TO_TICKS(100));
+        last_state_22 = state_22;
+        last_state_23 = state_23;
+
+        vTaskDelay(pdMS_TO_TICKS(10)); // 20ms debounce
     }
 }
 
 void app_main()
 {
+    init_7seg();
+    display_7seg(0);
     // Initialize Yin pitch detector with appropriate sampling rate
     Yin_init(&yinDetector, PITCH_DETECTION_THRESHOLD, samplingRate);
-
-    // Configure ADC - use standard API but cache the channel
     adc1_config_width(ADC_WIDTH_BIT_9);
     adc1_config_channel_atten(adc_channel, ADC_ATTEN_DB_11);
-
-    // Enable DAC
     dac_output_enable(DAC_CHANNEL_1);
-
-    // Initialize buffers to mid-level (128)
     for (int i = 0; i < BUFFER_SIZE; i++)
     {
         recordBuffer[i] = 128;
         processingBuffer[i] = 128;
     }
 
-    // Create tasks
-    // xTaskCreatePinnedToCore(&PitchProcessTask, "pitch", 4096, NULL, 3, NULL, 1); // Lower priority on core 0
-    xTaskCreatePinnedToCore(&SwitchReadTask, "switch", 2048, NULL, 2, NULL, 0); // Lowest priority on core 0
-
-    // Create high-precision timer for audio sampling
     esp_timer_handle_t sampleTimer;
-    esp_timer_handle_t pitchTimer;
     const esp_timer_create_args_t sampleTimerconf = {
-        .callback = &SampleTimerCallback,
+        .callback = &SampleInput,
         .name = "audio_sampler",
         .dispatch_method = ESP_TIMER_ISR};
 
-    const esp_timer_create_args_t pitchTimerconf = {
-        .callback = &PitchProcessTask,
-        .name = "pitch_process",
-        .dispatch_method = ESP_TIMER_TASK};
-
+    // xTaskCreatePinnedToCore(display_7seg_task, "display_7seg_task", 4096, NULL, 5, NULL, 1);
+    xTaskCreatePinnedToCore(button_task, "button_task", 4096, NULL, 5, NULL, 1);
+    xTaskCreatePinnedToCore(PitchProcessTask, "PitchProcessTask", 4096, NULL, 5, NULL, 1);
     esp_timer_create(&sampleTimerconf, &sampleTimer);
-    esp_timer_create(&pitchTimerconf, &pitchTimer);
 
     // Mark ISR as ready to process
     isrReady = true;
 
     // Start timer with calculated interval
     esp_timer_start_periodic(sampleTimer, 1000000 / SAMPLE_RATE);
-    esp_timer_start_periodic(pitchTimer, BUFFER_SIZE * 1000000 / SAMPLE_RATE);
 }
