@@ -21,11 +21,11 @@ static Yin yinDetector;                       // Yin pitch detector
 static uint8_t processingBuffer[BUFFER_SIZE]; // Buffer for audio analysis
 static uint8_t recordBuffer[BUFFER_SIZE];     // Circular buffer for audio samples
 static volatile bool bufferFilled = false;
-static volatile uint16_t inputPosition = 0;      // Position for writing new samples
-static volatile uint16_t outputPosition = 0;     // Position for reading samples
-static volatile uint16_t processingPosition = 0; // Position for filling the processing buffer
-static volatile uint8_t playbackSpeed = 128;     // Neutral speed (no shift)
-static volatile bool isrReady = false;           // Flag to indicate ISR is properly initialized
+static volatile uint16_t inputPosition = BUFFER_SIZE - 1; // Position for writing new samples
+static volatile uint16_t outputPosition = 0;              // Position for reading samples
+static volatile uint16_t processingPosition = 0;          // Position for filling the processing buffer
+static volatile uint8_t playbackSpeed = 128;              // Neutral speed (no shift)
+static volatile bool isrReady = false;                    // Flag to indicate ISR is properly initialized
 uint16_t samplingRate = SAMPLE_RATE;
 static adc1_channel_t adc_channel = ADC1_CHANNEL_4;
 static volatile float targetFrequency = 0.0f;
@@ -69,6 +69,7 @@ void IRAM_ATTR SampleInput(void *arg)
 // Task for pitch processing
 void PitchProcessTask(void *arg)
 {
+    uint64_t start_time, end_time;
     while (1)
     {
         if (bufferFilled)
@@ -82,7 +83,7 @@ void PitchProcessTask(void *arg)
             }
             bufferFilled = false;
         }
-        vTaskDelay(5);
+        vTaskDelay(1);
     }
 }
 
